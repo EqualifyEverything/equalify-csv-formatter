@@ -1,0 +1,6 @@
+process.log
+sitelist.csv
+/results/*
+.ddev
+.vscode
+.DS_Store
