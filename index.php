@@ -25,12 +25,6 @@ function logMessage($message) {
     echo "$message\n";
 }
 
-function saveResult($jobId, $data) {
-    $resultsDir = 'results'; // Ensure this directory exists and is writable
-    $filePath = $resultsDir . '/' . $jobId . '.json';
-    file_put_contents($filePath, json_encode($data, JSON_PRETTY_PRINT));
-}
-
 function checkSitemap($url) {
     $sitemapUrl = rtrim($url, '/') . '/sitemap.xml';
     $robotsTxtUrl = rtrim($url, '/') . '/robots.txt';
@@ -65,6 +59,13 @@ function checkSitemap($url) {
 
     return false; // No sitemap found
 }
+
+function saveResult($jobId, $data) {
+    $resultsDir = 'results'; // Ensure this directory exists and is writable
+    $filePath = $resultsDir . '/' . $jobId . '.json';
+    file_put_contents($filePath, json_encode($data, JSON_PRETTY_PRINT));
+}
+
 
 function followRedirects($url) {
     $headers = get_headers($url, 1);
