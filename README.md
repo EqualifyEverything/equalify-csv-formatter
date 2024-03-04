@@ -1,5 +1,5 @@
-## Equalify Bulk Scanner
-This is a bulk scanner we're building, while making WordPress accessible.
+## Equalify Bulk Importer
+This is a bulk importer we're building, while making WordPress accessible.
 
 I see no reason for additional documentation, unless you think there is?
 

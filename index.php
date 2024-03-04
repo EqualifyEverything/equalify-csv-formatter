@@ -1,153 +1,181 @@
 <?php
-// Read CSV file
-$csvFile = 'sitelist.csv'; // Change to actual path
+// Configuration
+$csvFile = 'websites.csv';
+$logFile = 'results.log';
+
+// Open the CSV file for reading
 $handle = fopen($csvFile, 'r');
-if ($handle !== FALSE) {
-    fgetcsv($handle); // Skip header
-    while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
-        $url = $data[0];
-        $sitemapUrl = checkSitemap($url);
-        if ($sitemapUrl) {
-            logMessage('Valid Sitemap: ' .$url);
-            //processSitemap($sitemapUrl);
-        } else {
-            logMessage('No Sitemap: ' .$url);
-        }
-    }
-    fclose($handle);
-} else {
-    logMessage("Failed to open the CSV file.");
+if ($handle === false) {
+    die("Error: Could not open CSV file for reading.\n");
 }
 
-function logMessage($message) {
-    $logFile = 'process.log';
-    file_put_contents($logFile, $message . PHP_EOL, FILE_APPEND);
-    echo "$message\n";
-}
+// Process each Website from the CSV
+fgetcsv($handle); // Skip header row
+while (($data = fgetcsv($handle, 1000, ",")) !== false) {
+    $website = trim($data[0]); // Extract the URL
 
-function checkSitemap($url) {
-    $sitemapUrl = rtrim($url, '/') . '/sitemap.xml';
-    $robotsTxtUrl = rtrim($url, '/') . '/robots.txt';
+    // Find the associated sitemap (if any)
+    $sitemapUrl = findSitemap($website);
 
-    // Check sitemap.xml
-    $sitemapUrl = followRedirects($sitemapUrl);
     if ($sitemapUrl) {
-        return $sitemapUrl; // Return final sitemap URL after following redirects
+        // Process the sitemap, extract pages, AND update results.log
+        processAndSavePages($website, $sitemapUrl); 
+    } else {
+        // No sitemap 
+        saveToCsv($website, 'pages.csv');
+        logMessage("$website - No Sitemap\n"); // Update results.log
+    }
+}
+
+fclose($handle);
+
+/**
+ * Attempts to find a valid sitemap associated with a given URL.
+ * @param string $website The base URL to check.
+ * @return string|false The URL of the valid sitemap, or false if none found.
+ */
+function findSitemap($website) {
+    // 1. Check for sitemap.xml directly
+    $potentialUrl = $website . '/sitemap.xml';
+    if (isValidSitemap($potentialUrl)) {
+        return $potentialUrl;
     }
 
-    // Use cURL for better error handling when checking robots.txt
+    // 2. Check robots.txt
+    $robotsTxtUrl = $website . '/robots.txt';
+
+    // Use cURL for better error handling
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $robotsTxtUrl);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HEADER, false);
-    curl_setopt($ch, CURLOPT_FAILONERROR, true); // Important: this will make cURL fail silently on HTTP errors
-    $robotsTxt = curl_exec($ch);
-    if ($robotsTxt) {
-        $lines = explode("\n", $robotsTxt);
-        foreach ($lines as $line) {
-            if (strpos($line, 'Sitemap:') === 0) {
-                $sitemapFromRobots = trim(substr($line, strlen('Sitemap:')));
-                $headers = get_headers($sitemapFromRobots);
-                if ($headers && strpos($headers[0], '200') !== false) {
-                    curl_close($ch);
-                    return $sitemapFromRobots; // Return sitemap URL found via robots.txt
-                }
-            }
-        }
-    }
+    curl_setopt($ch, CURLOPT_HEADER, false); // Don't need headers
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true); // Follow redirects
+    curl_setopt($ch, CURLOPT_MAXREDIRS, 3); // Limit redirects
+    $robotsTxtContent = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
 
-    return false; // No sitemap found
-}
-
-function saveResult($jobId, $data) {
-    $resultsDir = 'results'; // Ensure this directory exists and is writable
-    $filePath = $resultsDir . '/' . $jobId . '.json';
-    file_put_contents($filePath, json_encode($data, JSON_PRETTY_PRINT));
-}
-
-
-function followRedirects($url) {
-    $headers = get_headers($url, 1);
-    if ($headers && strpos($headers[0], '200') !== false) {
-        return $url; // URL points directly to a resource
-    } elseif ($headers && (strpos($headers[0], '301') !== false || strpos($headers[0], '302') !== false)) {
-        if (is_array($headers['Location'])) {
-            // If there are multiple Location headers, use the last one
-            $newUrl = end($headers['Location']);
-        } else {
-            $newUrl = $headers['Location'];
+    if ($httpCode == 200) { // Check if robots.txt was fetched successfully
+        $sitemapUrl = parseRobotsForSitemap($robotsTxtContent);
+        if ($sitemapUrl && isValidSitemap($sitemapUrl)) {
+            return $sitemapUrl;
         }
-        return followRedirects($newUrl); // Recursive call to follow redirects
     }
 
-    return false; // No valid URL found after following redirects
+    // No sitemap found
+    return false;
 }
 
-function processSitemap($sitemapUrl) {
-    $apiUrl = "http://198.211.98.156/generate/sitemapurl";
-    $postData = json_encode(['url' => $sitemapUrl]);
+/**
+ * Processes a sitemap, extracts pages, saves them to a CSV file, AND logs to results.log
+ * @param string $baseUrl The original URL associated with the sitemap.
+ * @param string $sitemapUrl The URL of the sitemap to process.
+ */
+function processAndSavePages($baseUrl, $sitemapUrl) {
+    $content = file_get_contents($sitemapUrl); // Consider using cURL for more detailed error handling
 
-    $ch = curl_init($apiUrl);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HEADER, false);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Content-Type: application/json',
-        'Content-Length: ' . strlen($postData)
+    // Pre-validate XML (if possible)
+    libxml_use_internal_errors(true); 
+    $xml = simplexml_load_string($content);
+
+    if ($xml === false) {
+        // Invalid XML
+        $errors = libxml_get_errors();
+        foreach ($errors as $error) {
+            logMessage("$baseUrl - $sitemapUrl - XML Error: $error->message\n");
+        }
+        libxml_clear_errors();
+        return; 
+    }
+
+    if ($xml->getName() === 'sitemapindex') {
+        logMessage("$baseUrl - $sitemapUrl - Sitemap Index\n"); 
+        // Process nested sitemaps (logging included within recursion)
+        foreach ($xml->sitemap as $nestedSitemap) {
+            processAndSavePages($baseUrl, $nestedSitemap->loc); // Updated!
+        }
+    } else {
+        // Regular sitemap, extract pages & log
+        foreach ($xml->url as $url) {
+            saveToCsv($url->loc, 'pages.csv');
+        }
+        $pageCount = count($xml->url);
+        logMessage("$baseUrl - $sitemapUrl - Pages: $pageCount\n"); 
+    }
+}
+
+
+/**
+ * Processes a sitemap and logs the appropriate information.
+ * @param string $baseUrl The original URL associated with the sitemap.
+ * @param string $sitemapUrl The URL of the sitemap to process.
+ */
+function processSitemap($baseUrl, $sitemapUrl) {
+    $xml = simplexml_load_string(file_get_contents($sitemapUrl));
+
+    if ($xml->getName() === 'sitemapindex') {
+        logMessage("$baseUrl - $sitemapUrl - Sitemap Index\n");
+        // Process nested sitemaps
+        foreach ($xml->sitemap as $nestedSitemap) {
+            processSitemap($baseUrl, $nestedSitemap->loc);
+        }
+    } else {
+        $pageCount = count($xml->url);
+        logMessage("$baseUrl - $sitemapUrl - Pages: $pageCount\n");
+    }
+}
+
+/**
+ * Checks if a given URL points to a valid sitemap.
+ * @param string $sitemapUrl The sitemap URL to check.
+ * @return bool True if valid, false otherwise.
+ */
+function isValidSitemap($sitemapUrl) {
+    $context = stream_context_create([
+        'ssl' => [
+            'verify_peer' => false, 
+            'verify_peer_name' => false,
+        ],
     ]);
 
-    $response = curl_exec($ch);
-    $httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    if ($response === false || $httpcode != 200) {
-        logMessage("Error processing sitemap for $sitemapUrl: " . curl_error($ch));
-        curl_close($ch);
-        return;
-    }
-
-    curl_close($ch);
-
-    $jobIds = json_decode($response, true);
-    if (json_last_error() !== JSON_ERROR_NONE) {
-        logMessage("Error decoding JSON response for $sitemapUrl");
-        return;
-    }
-
-    generateResults($jobIds);
-}
-
-function fetchJobResult($jobId) {
-    $apiUrl = "http://198.211.98.156/results/" . $jobId;
-    sleep(3); // Wait for 5 seconds before making the request
-
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $apiUrl);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-
-    $response = curl_exec($ch);
-    $httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    if ($response === false || $httpcode != 200) {
-        logMessage("Error fetching results for JobID $jobId: " . curl_error($ch));
-        curl_close($ch);
-        return;
-    }
-
-    curl_close($ch);
-    $data = json_decode($response, true);
-    if (isset($data['status']) && $data['status'] === 'completed') {
-        saveResult($jobId, $data);
-    } else {
-        // Log any other status
-        $status = isset($data['status']) ? $data['status'] : 'unknown';
-        logMessage("JobID $jobId returned status: $status");
+    try {
+        $headers = get_headers($sitemapUrl, 0, $context);
+        return is_array($headers) && strpos($headers[0], '200 OK') !== false;
+    } catch (Exception $e) {
+        logMessage("$sitemapUrl - Sitemap Error: " . $e->getMessage() . "\n"); 
+        return false;
     }
 }
 
-function generateResults($jobIds) {
-    foreach ($jobIds as $job) {
-        fetchJobResult($job['JobID']);
+/**
+ * Parses robots.txt content to find a Sitemap directive.
+ * @param string $content The content of the robots.txt file.
+ * @return string|false The URL of the sitemap found in robots.txt, or false if none found.
+ */
+function parseRobotsForSitemap($content) {
+    $lines = explode("\n", $content);
+    foreach ($lines as $line) {
+        if (strpos($line, 'Sitemap:') === 0) {
+            return trim(substr($line, 8));
+        }
     }
+    return false;
 }
 
-?>
+/**
+ * Logs a message to the specified log file.
+ * @param string $message The message to log.
+ */
+function logMessage($message) {
+    global $logFile;
+    file_put_contents($logFile, $message, FILE_APPEND);
+}
+
+/**
+ * Saves a URL to a CSV file.
+ * @param string $url The URL to save.
+ * @param string $filename The name of the CSV file.
+ */
+function saveToCsv($url, $filename) {
+    file_put_contents($filename, "$url\n", FILE_APPEND);
+}
