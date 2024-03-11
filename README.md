@@ -1,9 +1,11 @@
-## Equalify Bulk Importer
-This is a bulk importer we're building, while making WordPress accessible.
+## Equalify CSV Formatter
+This script formats a list of sites for Equalify.
 
-I see no reason for additional documentation, unless you think there is?
+### To run
+1. Create `websites.csv` with a list of your websites.
+2. run `php index.php`.
+3. The process will run and export a list to `results.csv`.
 
-Let me know by posting an issue.
+### Issues?
 
-Hugs,
-Blake
+Post an issue!
